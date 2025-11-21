@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mila & Elfie RPG</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #2c3e50;
+            font-family: 'Segoe UI', sans-serif;
+            touch-action: none;
+            user-select: none;
+        }
+        canvas { display: block; }
+
+        /* UI Layer (Über dem Canvas) */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex; flex-direction: column; justify-content: space-between;
+        }
+        .top-panel {
+            padding: 15px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+            color: white; font-weight: bold; text-shadow: 1px 1px 2px black;
+            display: flex; gap: 20px; font-size: 18px;
+        }
+        .status { display: flex; align-items: center; gap: 5px; }
+        .bar-bg { width: 100px; height: 10px; background: #333; border-radius: 5px; overflow: hidden; border: 1px solid #555; }
+        #stamina-bar { height: 100%; background: #f1c40f; width: 100%; }
+        #distract-bar { height: 100%; background: #e74c3c; width: 0%; }
+
+        /* Controls unten */
+        .controls-panel {
+            pointer-events: auto;
+            padding: 20px;
+            display: flex; justify-content: space-between; align-items: flex-end;
+        }
+        /* Joystick */
+        #joystick-base {
+            width: 130px; height: 130px;
+            background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%; position: relative; backdrop-filter: blur(5px);
+        }
+        #joystick-stick {
+            width: 60px; height: 60px; background: rgba(255,255,255,0.9);
+            border-radius: 50%; position: absolute; top: 35px; left: 35px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+        }
+        /* Buttons */
+        .btn-group { display: flex; flex-direction: column; gap: 15px; }
+        .game-btn {
+            width: 75px; height: 75px; border-radius: 50%; border: none;
+            color: white; font-size: 14px; font-weight: bold;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4); cursor: pointer;
+        }
+        .game-btn:active { transform: scale(0.95); }
+        #btn-switch { background: linear-gradient(135deg, #3498db, #2980b9); font-size: 12px; padding-top: 5px;}
+        #btn-sprint { background: linear-gradient(135deg, #e67e22, #d35400); font-size: 24px; }
+
+        /* Nachrichten */
+        #big-message {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 40px; color: #f1c40f; font-weight: bold; text-shadow: 0 0 15px black;
+            opacity: 0; transition: opacity 0.5s; pointer-events: none; text-align: center;
+        }
+        #big-message.attack {
+            color: #e74c3c;
+            animation: shake 0.1s infinite;
+        }
+        @keyframes shake { 0%, 100% {transform: translate(-50%, -50%);} 20% {transform: translate(-52%, -50%);} 40% {transform: translate(-48%, -50%);} 60% {transform: translate(-52%, -50%);} 80% {transform: translate(-48%, -50%);} }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="ui-layer">
+    <div class="top-panel">
+        <div class="status">🐕 <span id="dog-name">MILA</span></div>
+        <div class="status">⚡ <div class="bar-bg"><div id="stamina-bar"></div></div></div>
+        <div class="status">🐰 <div class="bar-bg"><div id="distract-bar"></div></div></div>
+    </div>
+    <div id="big-message">PERSON GEFUNDEN!</div>
+    <div class="controls-panel">
+        <div id="joystick-base"><div id="joystick-stick"></div></div>
+        <div class="btn-group">
+            <button id="btn-switch" class="game-btn" onclick="game.switchDog()">Hund<br>Wechseln</button>
+            <button id="btn-sprint" class="game-btn" onmousedown="game.sprint(true)" onmouseup="game.sprint(false)" ontouchstart="game.sprint(true)" ontouchend="game.sprint(false)">💨</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const ui = {
+    dogName: document.getElementById('dog-name'),
+    stamina: document.getElementById('stamina-bar'),
+    distract: document.getElementById('distract-bar'),
+    msg: document.getElementById('big-message'),
+    stick: document.getElementById('joystick-stick'),
+    base: document.getElementById('joystick-base')
+};
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize); resize();
+
+// --- HILFSFUNKTIONEN ---
+const Utils = {
+    clamp: (v, min, max) => Math.min(Math.max(v, min), max),
+    dist: (x1, y1, x2, y2) => Math.sqrt((x2-x1)**2 + (y2-y1)**2),
+    lerp: (a, b, t) => a + (b - a) * t
+};
+
+// --- SPRITE ZEICHNER ---
+const SpriteRenderer = {
+
+    // Helper für schlanke Hunde (Mila/Elfie)
+    drawMilaElfie(ctx, x, y, dogData, direction, moveFrame) {
+        ctx.save();
+        ctx.translate(x, y);
+        let bounce = Math.sin(moveFrame * 0.2) * 2;
+        const fur = dogData.color; const vest = dogData.vest; const earInner = dogData.earColor;
+
+        ctx.fillStyle = fur;
+        if(direction === 'down') { // FRONT
+            ctx.fillRect(-12, -20 + bounce, 24, 25); 
+            ctx.fillStyle = vest; ctx.fillRect(-13, -15 + bounce, 26, 10); 
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -25 + bounce, 15, 0, Math.PI*2); ctx.fill(); 
+            ctx.beginPath(); ctx.moveTo(-8, -35+bounce); ctx.lineTo(-15, -50+bounce); ctx.lineTo(-2, -38+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(8, -35+bounce); ctx.lineTo(15, -50+bounce); ctx.lineTo(2, -38+bounce); ctx.fill();
+            ctx.fillStyle = earInner;
+            ctx.beginPath(); ctx.moveTo(-8, -36+bounce); ctx.lineTo(-13, -46+bounce); ctx.lineTo(-4, -39+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(8, -36+bounce); ctx.lineTo(13, -46+bounce); ctx.lineTo(4, -39+bounce); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(-5, -26+bounce, 3, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(5, -26+bounce, 3, 0, Math.PI*2); ctx.fill(); 
+            ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(-5, -26+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(5, -26+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+            ctx.fillRect(-2, -22+bounce, 4, 3);
+        } else if (direction === 'up') { // RÜCKEN
+            ctx.fillRect(-12, -20 + bounce, 24, 25);
+            ctx.fillStyle = vest; ctx.fillRect(-13, -18 + bounce, 26, 12);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -25 + bounce, 14, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(-8, -35+bounce); ctx.lineTo(-15, -50+bounce); ctx.lineTo(-2, -38+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(8, -35+bounce); ctx.lineTo(15, -50+bounce); ctx.lineTo(2, -38+bounce); ctx.fill();
+            let wag = Math.sin(moveFrame * 0.4) * 10;
+            ctx.strokeStyle = fur; ctx.lineWidth = 5; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(0, 0+bounce); ctx.quadraticCurveTo(0, 10+bounce, wag, 15+bounce); ctx.stroke();
+        } else if (direction === 'right' || direction === 'left') { // SEITE
+            if(direction === 'left') ctx.scale(-1, 1);
+            ctx.fillRect(-15, -22 + bounce, 30, 22);
+            ctx.fillStyle = vest; ctx.fillRect(-16, -20 + bounce, 32, 10);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(10, -28 + bounce, 12, 0, Math.PI*2); ctx.fill();
+            ctx.fillRect(18, -30 + bounce, 8, 6); ctx.fillStyle='black'; ctx.fillRect(24, -31+bounce, 3, 3);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.moveTo(5, -35+bounce); ctx.lineTo(0, -50+bounce); ctx.lineTo(15, -38+bounce); ctx.fill();
+            ctx.fillStyle = earInner; ctx.beginPath(); ctx.moveTo(6, -36+bounce); ctx.lineTo(2, -46+bounce); ctx.lineTo(12, -39+bounce); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(12, -30+bounce, 3, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(14, -30+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = fur; ctx.lineWidth = 5; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(-15, -5+bounce); ctx.lineTo(-25, -10+bounce); ctx.stroke();
+        }
+        ctx.restore();
+    },
+
+    // Helper für Spike (Stämmig)
+    drawSpike(ctx, x, y, dogData, direction, moveFrame) {
+        ctx.save();
+        ctx.translate(x, y + 10); 
+        let bounce = Math.sin(moveFrame * 0.2) * 1.5;
+        const fur = dogData.color; const vest = dogData.vest;
+
+        ctx.fillStyle = fur;
+        if(direction === 'down') { 
+            ctx.fillRect(-18, -15 + bounce, 36, 20); 
+            ctx.fillStyle = vest; ctx.fillRect(-20, -10 + bounce, 40, 10); 
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -18 + bounce, 18, 0, Math.PI*2); ctx.fill(); 
+            ctx.beginPath(); ctx.moveTo(-6, -30+bounce); ctx.lineTo(-10, -38+bounce); ctx.lineTo(-2, -32+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(6, -30+bounce); ctx.lineTo(10, -38+bounce); ctx.lineTo(2, -32+bounce); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(-5, -20+bounce, 4, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(5, -20+bounce, 4, 0, Math.PI*2); ctx.fill(); 
+            ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(-5, -20+bounce, 2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(5, -20+bounce, 2, 0, Math.PI*2); ctx.fill();
+            ctx.fillRect(-3, -16+bounce, 6, 4);
+        } else if (direction === 'up') { 
+            ctx.fillRect(-18, -15 + bounce, 36, 20);
+            ctx.fillStyle = vest; ctx.fillRect(-20, -13 + bounce, 40, 12);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -18 + bounce, 17, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = fur; ctx.lineWidth = 8; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(0, 5+bounce); ctx.lineTo(5, 10+bounce); ctx.stroke();
+        } else if (direction === 'right' || direction === 'left') { 
+             if(direction === 'left') ctx.scale(-1, 1);
+            ctx.fillRect(-20, -17 + bounce, 35, 17);
+            ctx.fillStyle = vest; ctx.fillRect(-22, -15 + bounce, 39, 10);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(10, -22 + bounce, 15, 0, Math.PI*2); ctx.fill();
+            ctx.fillRect(20, -25 + bounce, 8, 8); ctx.fillStyle='black'; ctx.fillRect(26, -26+bounce, 4, 4);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.moveTo(5, -28+bounce); ctx.lineTo(0, -35+bounce); ctx.lineTo(15, -30+bounce); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(12, -25+bounce, 3, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(14, -25+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+             ctx.strokeStyle = fur; ctx.lineWidth = 8; ctx.lineCap = 'round';
+             ctx.beginPath(); ctx.moveTo(-20, 0+bounce); ctx.lineTo(-25, 5+bounce); ctx.stroke();
+        }
+
+        ctx.restore();
+    },
+    
+    // Helper für Rocco (Welpe)
+    drawRocco(ctx, x, y, dogData, direction, moveFrame) {
+        ctx.save();
+        ctx.translate(x, y + 20); 
+        ctx.scale(0.6, 0.6); 
+        let bounce = Math.sin(moveFrame * 0.2) * 3;
+        const fur = dogData.color; const vest = dogData.vest; const earInner = dogData.earColor;
+
+        ctx.fillStyle = fur;
+        if(direction === 'down') { 
+            ctx.fillRect(-12, -20 + bounce, 24, 25); 
+            ctx.fillStyle = vest; ctx.fillRect(-13, -15 + bounce, 26, 10); 
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -25 + bounce, 15, 0, Math.PI*2); ctx.fill(); 
+            ctx.beginPath(); ctx.moveTo(-10, -35+bounce); ctx.lineTo(-15, -50+bounce); ctx.lineTo(-2, -40+bounce); ctx.fill(); 
+            ctx.beginPath(); ctx.moveTo(10, -35+bounce); ctx.lineTo(15, -50+bounce); ctx.lineTo(2, -40+bounce); ctx.fill();
+            ctx.fillStyle = earInner;
+            ctx.beginPath(); ctx.moveTo(-10, -37+bounce); ctx.lineTo(-13, -47+bounce); ctx.lineTo(-4, -42+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(10, -37+bounce); ctx.lineTo(13, -47+bounce); ctx.lineTo(4, -42+bounce); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(-5, -26+bounce, 3, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(5, -26+bounce, 3, 0, Math.PI*2); ctx.fill(); 
+            ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(-5, -26+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(5, -26+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+             ctx.fillRect(-2, -22+bounce, 4, 3);
+        } else if (direction === 'up') { 
+            ctx.fillRect(-12, -20 + bounce, 24, 25);
+            ctx.fillStyle = vest; ctx.fillRect(-13, -18 + bounce, 26, 12);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -25 + bounce, 14, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(-10, -35+bounce); ctx.lineTo(-15, -50+bounce); ctx.lineTo(-2, -40+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(10, -35+bounce); ctx.lineTo(15, -50+bounce); ctx.lineTo(2, -40+bounce); ctx.fill();
+            let wag = Math.sin(moveFrame * 0.4) * 10;
+            ctx.strokeStyle = fur; ctx.lineWidth = 5; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(0, 0+bounce); ctx.quadraticCurveTo(0, 10+bounce, wag, 15+bounce); ctx.stroke();
+        } else if (direction === 'right' || direction === 'left') { 
+            if(direction === 'left') ctx.scale(-1, 1);
+            ctx.fillRect(-15, -22 + bounce, 30, 22);
+            ctx.fillStyle = vest; ctx.fillRect(-16, -20 + bounce, 32, 10);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(10, -28 + bounce, 12, 0, Math.PI*2); ctx.fill();
+            ctx.fillRect(18, -30 + bounce, 8, 6); ctx.fillStyle='black'; ctx.fillRect(24, -31+bounce, 3, 3);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.moveTo(5, -35+bounce); ctx.lineTo(0, -50+bounce); ctx.lineTo(15, -38+bounce); ctx.fill();
+            ctx.fillStyle = earInner; ctx.beginPath(); ctx.moveTo(6, -36+bounce); ctx.lineTo(2, -46+bounce); ctx.lineTo(12, -39+bounce); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(12, -30+bounce, 3, 0, Math.PI*2); ctx.fill();
+             ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(14, -30+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+             ctx.strokeStyle = fur; ctx.lineWidth = 5; ctx.lineCap = 'round';
+             ctx.beginPath(); ctx.moveTo(-15, -5+bounce); ctx.lineTo(-25, -10+bounce); ctx.stroke();
+        }
+        ctx.restore();
+    },
+
+    // Helper für Bodo (Großer Schäferhund mit Metall-Maulkorb)
+    drawBodo(ctx, x, y, dogData, direction, moveFrame) {
+        ctx.save();
+        ctx.translate(x, y + 5); 
+        let bounce = Math.sin(moveFrame * 0.2) * 1.8;
+        const fur = dogData.color; const vest = dogData.vest; 
+        const muzzleColor = '#a9b3bb'; // Silber für Metall
+
+        ctx.fillStyle = fur;
+        if(direction === 'down') { // FRONT
+            ctx.fillRect(-15, -22 + bounce, 30, 28); 
+            ctx.fillStyle = vest; ctx.fillRect(-17, -15 + bounce, 34, 12); 
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -28 + bounce, 17, 0, Math.PI*2); ctx.fill(); 
+            // Maulkorb (Metall-Stil - Hannibal Lecter)
+            ctx.strokeStyle = muzzleColor; 
+            ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.arc(0, -20+bounce, 12, 0, Math.PI, true); ctx.stroke(); // Kinnriemen
+            ctx.lineWidth = 3.5;
+            ctx.beginPath(); ctx.arc(0, -20+bounce, 8, 0, Math.PI*2); ctx.stroke(); // Maulkorb-Basis
+            ctx.fillStyle = '#666'; ctx.fillRect(-7, -20+bounce, 14, 5); // Mund-Verschluss
+            
+            // Ohren
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.moveTo(-10, -40+bounce); ctx.lineTo(-18, -55+bounce); ctx.lineTo(-4, -45+bounce); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(10, -40+bounce); ctx.lineTo(18, -55+bounce); ctx.lineTo(4, -45+bounce); ctx.fill();
+            // Augen
+            ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(-6, -30+bounce, 3, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(6, -30+bounce, 3, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(-6, -30+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(6, -30+bounce, 1.5, 0, Math.PI*2); ctx.fill();
+        } else if (direction === 'up') { // RÜCKEN
+            ctx.fillRect(-15, -22 + bounce, 30, 28);
+            ctx.fillStyle = vest; ctx.fillRect(-17, -20 + bounce, 34, 14);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(0, -28 + bounce, 16, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = fur; ctx.lineWidth = 7; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(0, 5+bounce); ctx.lineTo(8, 15+bounce); ctx.stroke();
+        } else if (direction === 'right' || direction === 'left') { // SEITE
+             if(direction === 'left') ctx.scale(-1, 1);
+            ctx.fillRect(-18, -25 + bounce, 35, 25);
+            ctx.fillStyle = vest; ctx.fillRect(-20, -20 + bounce, 38, 12);
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.arc(12, -32 + bounce, 15, 0, Math.PI*2); ctx.fill();
+            // Maulkorb (Metall-Stil)
+            ctx.strokeStyle = muzzleColor; 
+            ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.arc(15, -28+bounce, 10, -Math.PI/3, Math.PI/3); ctx.stroke();
+            ctx.lineWidth = 3.5;
+            ctx.beginPath(); ctx.arc(20, -28+bounce, 6, -Math.PI/2, Math.PI/2); ctx.stroke();
+            ctx.fillStyle = '#666'; 
+            ctx.fillRect(18, -30+bounce, 5, 4);
+
+            // Ohren
+            ctx.fillStyle = fur; ctx.beginPath(); ctx.moveTo(7, -40+bounce); ctx.lineTo(2, -55+bounce); ctx.lineTo(18, -45+bounce); ctx.fill();
+            // Schwanz
+            ctx.strokeStyle = fur; ctx.lineWidth = 7; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(-18, 0+bounce); ctx.lineTo(-25, 5+bounce); ctx.stroke();
+        }
+        ctx.restore();
+    },
+
+
+    // --- UNTER-FUNKTIONEN FÜR MENSCHLICHE SPRITES ---
+
+    // Zeichnet den Körper (Warnweste)
+    drawHumanBody(ctx) {
+        ctx.fillStyle = '#2c3e50'; 
+        ctx.fillRect(-15, -20, 30, 30);
+        ctx.fillStyle = '#f1c40f'; 
+        ctx.fillRect(-15, -10, 30, 15);
+        ctx.fillStyle = '#fff'; 
+        ctx.fillRect(-15, 0, 30, 3);
+    },
+
+    // Zeichnet den Kopf (Hautfarbe)
+    drawHumanHead(ctx, headColor = '#f5cba7') {
+        ctx.fillStyle = headColor;
+        ctx.beginPath(); ctx.arc(0, -30, 12, 0, Math.PI*2); ctx.fill();
+    },
+
+    // Zeichnet Haare basierend auf Typ und Richtung
+    drawHumanHair(ctx, hundefuehrerType, direction) {
+        const hairColor = '#8B4513'; // Dunkelbraunes Haar
+
+        if (hundefuehrerType === 'female') {
+            ctx.fillStyle = hairColor;
+            if (direction === 'down') { // Vorne (Haare fallen nach vorn)
+                ctx.beginPath(); ctx.arc(0, -30, 13, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillRect(-15, -25, 30, 35); // Langes Haar
+            } else if (direction === 'up') { // Hinten (Haare nach hinten/weniger sichtbar)
+                ctx.beginPath(); ctx.arc(0, -30, 13, 0, Math.PI*2); ctx.fill();
+            } else if (direction === 'right') { // Seite (lange Haare rechts)
+                ctx.beginPath(); ctx.arc(0, -30, 13, 0, Math.PI*2); ctx.fill();
+                ctx.fillRect(-2, -25, 12, 35); 
+            } else if (direction === 'left') { // Seite (lange Haare links)
+                ctx.beginPath(); ctx.arc(0, -30, 13, 0, Math.PI*2); ctx.fill();
+                ctx.fillRect(-10, -25, 12, 35); 
+            }
+        }
+    },
+
+    // Zeichnet Gesichtsdetails (Augen, Mund)
+    drawHumanFace(ctx, direction) {
+        ctx.fillStyle = 'black';
+        if (direction === 'down') { // Vorne
+            ctx.beginPath(); ctx.arc(-4, -32, 1.5, 0, Math.PI*2); ctx.fill(); // Linkes Auge
+            ctx.beginPath(); ctx.arc(4, -32, 1.5, 0, Math.PI*2); ctx.fill();  // Rechtes Auge
+            ctx.fillRect(-3, -27, 6, 1); // Mund
+        } else if (direction === 'right') { // Von links (Nasenrücken)
+            ctx.beginPath(); ctx.arc(5, -32, 1.5, 0, Math.PI*2); ctx.fill(); // Auge
+            ctx.fillRect(4, -27, 3, 1); // Mund (seitlich)
+        } else if (direction === 'left') { // Von rechts (Nasenrücken)
+            ctx.beginPath(); ctx.arc(-5, -32, 1.5, 0, Math.PI*2); ctx.fill(); // Auge
+            ctx.fillRect(-7, -27, 3, 1); // Mund (seitlich)
+        }
+        // UP/Hinten hat kein Gesicht
+    },
+
+    // Zeichnet die Kopfbedeckung (Hundeführer-Kappe oder Ziel-Mütze)
+    drawHumanCap(ctx, hundefuehrerType, type, direction) {
+        if (type === 'target') {
+            // Rote Kappe für Zielperson
+            ctx.fillStyle = '#e74c3c'; 
+            ctx.fillRect(-10, -40, 20, 10); // Kappe
+            ctx.beginPath(); ctx.arc(0, -30, 15, 0, Math.PI); ctx.fill(); // Schirm
+        } else if (hundefuehrerType === 'male') {
+            // Schwarze Kappe für männlichen Hundeführer
+            ctx.fillStyle = '#000'; 
+            ctx.fillRect(-8, -40, 16, 10); // Kappe
+            if (direction === 'down' || direction === 'up') {
+                ctx.fillRect(-10, -38, 20, 3); // Schirm vorne
+            } else if (direction === 'right') {
+                 ctx.fillRect(0, -38, 10, 3); // Schirm seitlich
+            } else if (direction === 'left') {
+                 ctx.fillRect(-10, -38, 10, 3); // Schirm seitlich
+            }
+        }
+    },
+
+    // Hauptfunktion zum Zeichnen der menschlichen Personen
+    drawHuman(ctx, x, y, type, camX, camY, dogDirection, hundefuehrerType = null) {
+        const screenX = x - camX;
+        const screenY = y - camY;
+        const headColor = '#f5cba7'; 
+        
+        // Die Blickrichtung des Menschen ist die gleiche wie die des Hundes
+        const humanDirection = dogDirection;
+
+        ctx.save();
+        ctx.translate(screenX, screenY);
+        
+        // 1. Haare (müssen unter den Kopf gezeichnet werden, wenn sie lang sind)
+        SpriteRenderer.drawHumanHair(ctx, hundefuehrerType, humanDirection);
+
+        // 2. Körper (Warnweste)
+        SpriteRenderer.drawHumanBody(ctx);
+        
+        // 3. Kopf (Hautfarbe)
+        SpriteRenderer.drawHumanHead(ctx, headColor);
+        
+        // 4. Kopfbedeckung (Kappe/Mütze)
+        SpriteRenderer.drawHumanCap(ctx, hundefuehrerType, type, humanDirection);
+
+        // 5. Gesicht (Augen/Mund)
+        if (humanDirection !== 'up') { // Nur zeichnen, wenn nicht der Rücken zu sehen ist
+            SpriteRenderer.drawHumanFace(ctx, humanDirection);
+        }
+        
+        ctx.restore();
+    },
+
+    // Helper für Hasen (unverändert)
+    drawRabbit(ctx, x, y, camX, camY) {
+        const sx = x - camX;
+        const sy = y - camY;
+        
+        ctx.fillStyle = '#bdc3c7'; 
+        ctx.beginPath(); 
+        ctx.ellipse(sx, sy, 10, 7, 0, 0, Math.PI*2); 
+        ctx.fill();
+        
+        ctx.fillStyle = '#bdc3c7'; 
+        ctx.beginPath();
+        ctx.ellipse(sx-5, sy-10, 3, 10, -0.3, 0, Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(sx+5, sy-10, 3, 10, 0.3, 0, Math.PI*2);
+        ctx.fill();
+    }
+};
+
+// --- SPIEL KLASSE ---
+class Game {
+    constructor() {
+        this.mapW = 2000; this.mapH = 2000;
+        this.cam = { x:0, y:0 };
+        this.player = { x: 500, y: 500, speed: 5, stamina: 100, distraction: 0, dir: 'down', dogId: 'mila' };
+        this.hundefuehrer = { x: 500, y: 550, type: 'male' }; // HANDLER ZU HUNDEFÜHRER
+        this.target = { x: 1500, y: 1500, scentStrength: 0 }; 
+        this.input = { x:0, y:0, sprint:false };
+        this.frame = 0;
+        this.bodoAttackTimer = 0; // Timer für Bodo's Attacken
+
+        // Erweiterung der Hunde-Liste
+        this.dogs = {
+            mila: { id: 'mila', name: 'MILA', color: '#1a1a1a', vest: '#FF4500', earColor: '#333', renderer: 'MilaElfie', baseSpeed: 5, hundefuehrer: 'male' }, // HANDLER ZU HUNDEFÜHRER
+            elfie: { id: 'elfie', name: 'ELFIE', color: '#6d4c41', vest: '#ADFF2F', earColor: '#D2B48C', renderer: 'MilaElfie', baseSpeed: 5, hundefuehrer: 'female' }, // HANDLER ZU HUNDEFÜHRER
+            spike: { id: 'spike', name: 'SPIKE', color: '#95a5a6', vest: '#3498db', earColor: '#7f8c8d', renderer: 'Spike', baseSpeed: 4.5, hundefuehrer: 'female' }, // HANDLER ZU HUNDEFÜHRER
+            rocco: { id: 'rocco', name: 'ROCCO', color: '#8b4513', vest: '#f39c12', earColor: '#d35400', renderer: 'Rocco', baseSpeed: 3, hundefuehrer: 'female' }, // HANDLER ZU HUNDEFÜHRER
+            bodo: { id: 'bodo', name: 'BODO', color: '#1a1a1a', vest: '#34495e', earColor: '#333', renderer: 'Bodo', baseSpeed: 4, hundefuehrer: 'male' } // HANDLER ZU HUNDEFÜHRER
+        };
+        this.dogKeys = Object.keys(this.dogs);
+        this.player.dogId = this.dogKeys[0]; 
+        this.hundefuehrer.type = this.dogs[this.player.dogId].hundefuehrer; // Initialer Hundeführer-Typ
+
+        this.scent = [];
+        this.rabbits = [];
+        this.trees = [];
+
+        for(let i=0; i<50; i++) this.trees.push({ x: Math.random()*this.mapW, y: Math.random()*this.mapH, r: 40+Math.random()*30 });
+        for(let i=0; i<8; i++) this.rabbits.push({ x: Math.random()*this.mapW, y: Math.random()*this.mapH, tx:0, ty:0, timer:0 });
+
+        setInterval(() => {
+            this.scent.push({ x: this.target.x, y: this.target.y, age: 0 });
+            if(this.scent.length > 150) this.scent.shift();
+        }, 600);
+
+        this.setupControls();
+        this.loop();
+    }
+
+    setupControls() {
+        let dragging = false;
+        const base = ui.base;
+        const stick = ui.stick;
+        const maxDist = 40;
+
+        const handle = (bx, by) => {
+            const rect = base.getBoundingClientRect();
+            const cx = rect.left + rect.width/2; 
+            const cy = rect.top + rect.height/2;
+            let dx = bx - cx; 
+            let dy = by - cy;
+            let dist = Utils.dist(0, 0, dx, dy);
+            
+            if(dist > maxDist) { 
+                dx = (dx/dist)*maxDist; 
+                dy = (dy/dist)*maxDist; 
+            }
+            
+            stick.style.transform = `translate(${dx}px, ${dy}px)`;
+            
+            this.input.x = dx/maxDist; 
+            this.input.y = dy/maxDist;
+        };
+        
+        const handleEnd = () => {
+            dragging = false; 
+            stick.style.transform = ``; 
+            this.input.x = 0; 
+            this.input.y = 0;
+        };
+
+        base.addEventListener('touchstart', e=>{ 
+            e.stopPropagation(); 
+            dragging=true; 
+            handle(e.touches[0].clientX, e.touches[0].clientY); 
+        }, {passive: true});
+
+        base.addEventListener('touchmove', e=>{ 
+            if(dragging) handle(e.touches[0].clientX, e.touches[0].clientY); 
+        }, {passive: true});
+        
+        base.addEventListener('touchend', handleEnd);
+        base.addEventListener('touchcancel', handleEnd); 
+
+        base.addEventListener('mousedown', e=>{ 
+            dragging=true; 
+            handle(e.clientX, e.clientY); 
+        });
+        window.addEventListener('mousemove', e=>{ 
+            if(dragging) handle(e.clientX, e.clientY); 
+        });
+        window.addEventListener('mouseup', handleEnd);
+    }
+
+    switchDog() { 
+        let currentIndex = this.dogKeys.indexOf(this.player.dogId);
+        let nextIndex = (currentIndex + 1) % this.dogKeys.length;
+        this.player.dogId = this.dogKeys[nextIndex];
+        const newDog = this.dogs[this.player.dogId];
+        
+        ui.dogName.innerText = newDog.name; 
+        this.player.speed = newDog.baseSpeed;
+        this.hundefuehrer.type = newDog.hundefuehrer; // Hundeführer-Typ wechseln
+        
+        this.bodoAttackTimer = 0; // Timer zurücksetzen
+    }
+
+    sprint(on) { this.input.sprint = on; }
+
+    update() {
+        this.frame++;
+        let spd = this.player.speed;
+        let isBodo = this.player.dogId === 'bodo';
+
+        if(this.input.sprint && this.player.stamina > 0) { spd *= 1.8; this.player.stamina -= 0.8; }
+        else if(this.player.stamina < 100) this.player.stamina += 0.3;
+
+        // Bodo Attacken-Logik (Häufiger Anfall)
+        let hundefuehrerAttacked = false; // HANDLER ZU HUNDEFÜHRER
+        if(isBodo) {
+            this.bodoAttackTimer++;
+            // Deutlich häufiger: Attacken-Chance alle 150+ Frames
+            if(this.bodoAttackTimer > 150 && Math.random() < 0.025) { 
+                this.player.distraction = 100; // Volle Ablenkung
+                this.player.stamina -= 20; // Stamina-Verlust
+                this.bodoAttackTimer = 0;
+                hundefuehrerAttacked = true;
+
+                // Nachricht anzeigen
+                ui.msg.innerText = "BODO ATTACKIERT HUNDEFÜHRER!"; // TEXT ANPASSEN
+                ui.msg.classList.add('attack');
+                ui.msg.style.opacity = 1;
+                // Timeout, um die Nachricht auszublenden
+                setTimeout(() => { ui.msg.style.opacity = 0; ui.msg.classList.remove('attack'); }, 1500);
+            }
+        } else {
+            this.bodoAttackTimer = 0;
+        }
+
+        // Ablenkung (Hasen)
+        let distracted = false;
+        this.rabbits.forEach(r => {
+            r.timer--;
+            if(r.timer<=0) { r.tx = r.x+(Math.random()-0.5)*500; r.ty = r.y+(Math.random()-0.5)*500; r.timer=200+Math.random()*200;}
+            let rd = Utils.dist(r.x, r.y, r.tx, r.ty);
+            if(rd>10) { r.x += ((r.tx-r.x)/rd)*2; r.y += ((r.ty-r.y)/rd)*2; }
+            if(Utils.dist(this.player.x, this.player.y, r.x, r.y) < 120) distracted = true;
+        });
+        if(distracted) this.player.distraction += 1.5; else if(this.player.distraction>0) this.player.distraction -= 0.5;
+        this.player.distraction = Utils.clamp(this.player.distraction, 0, 100);
+
+        // Bewegung des Hundes
+        if(this.player.distraction >= 90) { 
+            this.input.x = (Math.random()-0.5)*0.5; this.input.y = (Math.random()-0.5)*0.5;
+        }
+        
+        let dogMoving = false;
+        if(Math.abs(this.input.x) > 0.05 || Math.abs(this.input.y) > 0.05) { 
+            this.player.x += this.input.x * spd;
+            this.player.y += this.input.y * spd;
+            if(Math.abs(this.input.x) > Math.abs(this.input.y)) this.player.dir = this.input.x > 0 ? 'right' : 'left';
+            else this.player.dir = this.input.y > 0 ? 'down' : 'up';
+            dogMoving = true;
+        }
+        this.player.x = Utils.clamp(this.player.x, 0, this.mapW); this.player.y = Utils.clamp(this.player.y, 0, this.mapH);
+
+        // Hundeführer-Folgelogik 
+        const HUNDEFUEHRER_DISTANCE = isBodo ? 100 : 60; // Bodo hält mehr Abstand
+        if (dogMoving && !hundefuehrerAttacked) {
+            let targetX = this.player.x - this.input.x * HUNDEFUEHRER_DISTANCE;
+            let targetY = this.player.y - this.input.y * HUNDEFUEHRER_DISTANCE;
+            
+            if (Utils.dist(this.hundefuehrer.x, this.hundefuehrer.y, this.player.x, this.player.y) > HUNDEFUEHRER_DISTANCE) {
+                this.hundefuehrer.x = Utils.lerp(this.hundefuehrer.x, targetX, 0.15); 
+                this.hundefuehrer.y = Utils.lerp(this.hundefuehrer.y, targetY, 0.15);
+            }
+        } else if(hundefuehrerAttacked) {
+             // Lässt den Hundeführer kurz "stehen" wenn er angegriffen wurde
+             this.hundefuehrer.x = Utils.lerp(this.hundefuehrer.x, this.hundefuehrer.x, 0.0);
+             this.hundefuehrer.y = Utils.lerp(this.hundefuehrer.y, this.hundefuehrer.y, 0.0);
+        } else {
+             this.hundefuehrer.x = Utils.lerp(this.hundefuehrer.x, this.player.x, 0.03); 
+             this.hundefuehrer.y = Utils.lerp(this.hundefuehrer.y, this.player.y + 50, 0.03); 
+        }
+        
+
+        // Geruchsradius-Check (End-Pool)
+        const SCENT_RADIUS = 150;
+        const distToTarget = Utils.dist(this.player.x, this.player.y, this.target.x, this.target.y);
+        
+        if (distToTarget < SCENT_RADIUS) {
+            this.target.scentStrength = Utils.lerp(this.target.scentStrength, 1, 0.05);
+        } else {
+            this.target.scentStrength = Utils.lerp(this.target.scentStrength, 0, 0.05);
+        }
+        this.target.scentStrength = Utils.clamp(this.target.scentStrength, 0, 1);
+
+        // Kamera
+        this.cam.x = Utils.lerp(this.cam.x, this.player.x - canvas.width/2, 0.1);
+        this.cam.y = Utils.lerp(this.cam.y, this.player.y - canvas.height/2, 0.1);
+
+        // Ziel Check
+        if(distToTarget < 30) { 
+            ui.msg.innerText = "PERSON GEFUNDEN!";
+            ui.msg.style.opacity = 1;
+            setTimeout(() => {
+                this.target = {x:Math.random()*this.mapW, y:Math.random()*this.mapH, scentStrength: 0}; this.scent = [];
+                ui.msg.style.opacity = 0;
+            }, 3000);
+        }
+
+        // UI Update
+        ui.stamina.style.width = this.player.stamina + '%';
+        ui.distract.style.width = this.player.distraction + '%';
+    }
+
+    draw() {
+        ctx.fillStyle = '#3b7a57'; ctx.fillRect(0,0,canvas.width,canvas.height); 
+        let cx = this.cam.x; let cy = this.cam.y;
+
+        // Spur
+        this.scent.forEach(s => { s.age++;
+            ctx.fillStyle = `rgba(52, 152, 219, ${1 - s.age/200})`;
+            ctx.beginPath(); ctx.arc(s.x-cx, s.y-cy, 5, 0, Math.PI*2); ctx.fill();
+        });
+
+        // Hasen
+        this.rabbits.forEach(r => SpriteRenderer.drawRabbit(ctx, r.x, r.y, cx, cy));
+
+        // GERUCHSRADIUS (End-Pool)
+        const SCENT_RADIUS = 150;
+        const targetX_screen = this.target.x - cx;
+        const targetY_screen = this.target.y - cy;
+        
+        let alpha = 0.1 + this.target.scentStrength * 0.4; 
+        ctx.fillStyle = `rgba(52, 152, 219, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(targetX_screen, targetY_screen, SCENT_RADIUS, 0, Math.PI*2);
+        ctx.fill();
+
+        // Hundeführer zeichnen (Mensch)
+        if (this.player.distraction < 80) {
+            SpriteRenderer.drawHuman(ctx, this.hundefuehrer.x, this.hundefuehrer.y, 'hundefuehrer', cx, cy, this.player.dir, this.hundefuehrer.type);
+        }
+        
+        // Ziel Person zeichnen (Mensch)
+        SpriteRenderer.drawHuman(ctx, this.target.x, this.target.y, 'target', cx, cy, this.player.dir);
+
+        // HUND ZEICHNEN
+        const dog = this.dogs[this.player.dogId];
+        SpriteRenderer['draw' + dog.renderer](ctx, this.player.x-cx, this.player.y-cy, dog, this.player.dir, this.frame);
+
+
+        // Bäume
+        this.trees.forEach(t => {
+            let screenX = t.x - cx; let screenY = t.y - cy;
+            ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(screenX, screenY+t.r/2, t.r, t.r/2, 0, 0, Math.PI*2); ctx.fill(); 
+            ctx.fillStyle = '#5d4037'; ctx.fillRect(screenX-t.r/4, screenY, t.r/2, t.r/2); 
+            ctx.fillStyle = '#27ae60'; ctx.beginPath(); ctx.arc(screenX, screenY-t.r/3, t.r, 0, Math.PI*2); ctx.fill();
+        });
+    }
+
+    loop() { this.update(); this.draw(); requestAnimationFrame(()=>this.loop()); }
+}
+
+const game = new Game();
+</script>
+</body>
+</html>
